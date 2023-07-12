@@ -1,46 +1,119 @@
-import './BarebonCanvas.css'
+import {applyPatches, enableMapSet, enablePatches} from "immer"
+import {ProcessDataState} from "../ProcessDataState"
+import "./BarebonCanvas.css"
 
-import {useEffect, useRef} from "react"
+enablePatches()
+enableMapSet()
+
+import {useEffect, useRef, useState} from "react"
 
 interface BarebonCanvasProps {
 	width: number
 	height: number
 }
 
+const initialState: ProcessDataState = {
+	elements: new Map(),
+	orderedElementIds: [],
+	hoveredElementId: undefined,
+	state: {type: "idle"},
+}
+
+function render(ctx: CanvasRenderingContext2D, state: ProcessDataState) {
+	ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height)
+
+	for (const elementId of state.orderedElementIds) {
+		const element = state.elements.get(elementId)
+		if (!element) {
+			continue
+		}
+
+		switch (element.type) {
+			case "rect": {
+				ctx.fillStyle = element.fill
+				ctx.strokeStyle = element.stroke
+				ctx.lineWidth = 1
+				ctx.fillRect(element.x, element.y, element.width, element.height)
+				ctx.strokeRect(element.x, element.y, element.width, element.height)
+				break
+			}
+		}
+
+		if (elementId === state.hoveredElementId) {
+			const outerRect = new Path2D()
+			outerRect.rect(element.x - 2, element.y - 2, element.width + 4, element.height + 4)
+			ctx.strokeStyle = "blue"
+			ctx.lineWidth = 1
+			ctx.stroke(outerRect)
+		}
+	}
+}
+
 export function BarebonCanvas(props: BarebonCanvasProps) {
-	const canvasRef = useRef<HTMLCanvasElement>(null)
 	const workerRef = useRef<Worker | null>(null)
-	const sharedBufferRef = useRef<SharedArrayBuffer>(new SharedArrayBuffer(Uint16Array.BYTES_PER_ELEMENT * 2))
+	const sharedBufferRef = useRef<SharedArrayBuffer>(
+		new SharedArrayBuffer(Uint16Array.BYTES_PER_ELEMENT * 2),
+	)
+	const [canvasCtx, setCanvasCtx] = useState<CanvasRenderingContext2D | null>(null)
 	const cursorPosRef = useRef<Uint16Array>(new Uint16Array(sharedBufferRef.current))
-	const initialSizeRef = useRef({width: props.width, height: props.height})
-	const offscreenRef = useRef<OffscreenCanvas | null>(null)
+
+	const stateRef = useRef<ProcessDataState>(initialState)
 
 	useEffect(() => {
-		if (offscreenRef.current !== null) {
+		if (!canvasCtx) {
 			return
 		}
 
-		if (canvasRef.current === null) {
-			return
+		let isStopped = false
+		const renderLoop = () => {
+			if (isStopped) {
+				return
+			}
+
+			render(canvasCtx, stateRef.current)
+
+			requestAnimationFrame(renderLoop)
 		}
 
-		const renderWorker = new Worker(new URL("../workers/render-worker.ts", import.meta.url))
+		renderLoop()
+
+		return () => {
+			isStopped = true
+		}
+	}, [canvasCtx])
+
+	useEffect(() => {
+		if (canvasCtx) {
+			canvasCtx.scale(devicePixelRatio, devicePixelRatio)
+		}
+	}, [canvasCtx])
+
+	useEffect(() => {
+		const renderWorker = new Worker(
+			new URL("../workers/process-data-worker.ts", import.meta.url),
+			{type: "module"},
+		)
 		workerRef.current = renderWorker
-
-		const offscren = canvasRef.current.transferControlToOffscreen()
-		offscreenRef.current = offscren
 
 		renderWorker.postMessage(
 			{
 				type: "init",
 				mousePos: cursorPosRef.current,
-				canvas: offscren,
-				width: initialSizeRef.current.width,
-				height: initialSizeRef.current.height,
-				pixelRatio: devicePixelRatio,
 			},
-			[offscren],
+			[],
 		)
+
+		renderWorker.addEventListener("message", (e) => {
+			console.debug(e.data)
+
+			if ("patches" in e.data) {
+				stateRef.current = applyPatches(stateRef.current, e.data.patches)
+			}
+		})
+
+		return () => {
+			renderWorker.terminate()
+		}
 	}, [])
 
 	function handlePointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
@@ -83,12 +156,16 @@ export function BarebonCanvas(props: BarebonCanvasProps) {
 
 	return (
 		<canvas
-            className="barebon-canvas"
+			className="barebon-canvas"
 			onPointerMove={handlePointerMove}
 			onPointerDown={handlePointerDown}
 			onPointerUp={handlePointerUp}
 			onClick={handleClick}
-			ref={canvasRef}
+			width={props.width * devicePixelRatio}
+			height={props.height * devicePixelRatio}
+			ref={(el) => {
+				setCanvasCtx(el?.getContext("2d") ?? null)
+			}}
 			style={{
 				width: props.width,
 				height: props.height,

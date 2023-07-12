@@ -2,9 +2,9 @@ let mousePos: Uint16Array
 let canvas: OffscreenCanvas
 let ctx: OffscreenCanvasRenderingContext2D
 
-console.log("render-worker: started")
+console.log("render-worker: started", self)
 
-type BarebonElement = {
+type BarebonViewObject = {
 	type: "rect"
 	x: number
 	y: number
@@ -12,15 +12,16 @@ type BarebonElement = {
 	height: number
 	stroke: string
 	fill: string
+	strokeWidth?: number
 }
 
-type State = {
-	elements: BarebonElement[]
-	hoveredElement: BarebonElement | undefined
-	state: {type: "idle"} | {type: "dragging"; element: BarebonElement; x: number; y: number}
+type RenderingState = {
+	elements: BarebonViewObject[]
+	hoveredElement: BarebonViewObject | undefined
+	state: {type: "idle"} | {type: "dragging"; element: BarebonViewObject; x: number; y: number}
 }
 
-const state: State = {
+const state: RenderingState = {
 	elements: [],
 	hoveredElement: undefined,
 	state: {type: "idle"},
@@ -36,6 +37,12 @@ self.addEventListener("message", (event) => {
 		canvas.width = event.data.width * event.data.pixelRatio
 		canvas.height = event.data.height * event.data.pixelRatio
 		ctx.scale(event.data.pixelRatio, event.data.pixelRatio)
+
+		const dataWorker = new Worker("./process-data-worker.ts", {type: "module"})
+		dataWorker.postMessage({
+			type: "init",
+			mousePos,
+		})
 	}
 
 	if (event.data.type === "click") {
@@ -108,26 +115,46 @@ function renderMouse(ctx: OffscreenCanvasRenderingContext2D, mousePos: Uint16Arr
 	ctx.stroke()
 }
 
-function getHoveredElement(mousePos: Uint16Array, elements: BarebonElement[]) {
-    if (state.state.type === "dragging") {
-        return state.state.element
-    }
+function getHoveredElement(mousePos: Uint16Array, elements: BarebonViewObject[]) {
+	if (state.state.type === "dragging") {
+		return state.state.element
+	}
 
 	for (let i = elements.length - 1; i >= 0; i--) {
 		const element = elements[i]
 		if (element.type === "rect") {
-			if (isPointInRect(mousePos[0], mousePos[1], element.x, element.y, element.width, element.height)) {
+			if (
+				isPointInRect(
+					mousePos[0],
+					mousePos[1],
+					element.x,
+					element.y,
+					element.width,
+					element.height,
+				)
+			) {
 				return element
 			}
 		}
 	}
 }
 
-function isPointInRect(x: number, y: number, xRect: number, yRect: number, wRect: number, hRect: number) {
+function isPointInRect(
+	x: number,
+	y: number,
+	xRect: number,
+	yRect: number,
+	wRect: number,
+	hRect: number,
+) {
 	return x >= xRect && x <= xRect + wRect && y >= yRect && y <= yRect + hRect
 }
 
-function renderRect(ctx: OffscreenCanvasRenderingContext2D, rect: BarebonElement, isHovered: boolean) {
+function renderRect(
+	ctx: OffscreenCanvasRenderingContext2D,
+	rect: BarebonViewObject,
+	isHovered: boolean,
+) {
 	const rectPath = new Path2D()
 	rectPath.rect(rect.x, rect.y, rect.width, rect.height)
 	ctx.fillStyle = rect.fill
@@ -144,7 +171,7 @@ function renderRect(ctx: OffscreenCanvasRenderingContext2D, rect: BarebonElement
 	}
 }
 
-function renderElements(ctx: OffscreenCanvasRenderingContext2D, elements: BarebonElement[]) {
+function renderElements(ctx: OffscreenCanvasRenderingContext2D, elements: BarebonViewObject[]) {
 	for (const element of elements) {
 		if (element.type === "rect") {
 			renderRect(ctx, element, element === state.hoveredElement)
@@ -164,14 +191,14 @@ function render() {
 	renderMouse(ctx, mousePos)
 }
 
-let prevTime = 0
-function renderLoop(dt = 0) {
+function renderLoop() {
 	if (mousePos !== undefined) {
 		render()
 		handleTickEffects()
-		prevTime = dt
 	}
 	requestAnimationFrame(renderLoop)
 }
 
-renderLoop(0)
+renderLoop()
+
+export {}
